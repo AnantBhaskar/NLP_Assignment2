@@ -1,212 +1,178 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from sklearn.metrics import f1_score
-from transformers import RobertaTokenizer, RobertaModel
-import json
+import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import f1_score
+import tensorflow as tf
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, SimpleRNN, LSTM, GRU, Dense
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.preprocessing.text import Tokenizer
+import json
 
-# Load dataset function
-def load_dataset(file_path):
-    with open(file_path, 'r') as file:
-        data = json.load(file)
-    return data
+# Load datasets
+with open('NER_train.json', 'r') as f:
+    ner_train_data = json.load(f)
+with open('NER_val.json', 'r') as f:
+    ner_val_data = json.load(f)
+with open('NER_test.json', 'r') as f:
+    ner_test_data = json.load(f)
+
+with open('ATE_train.json', 'r') as f:
+    ate_train_data = json.load(f)
+with open('ATE_val.json', 'r') as f:
+    ate_val_data = json.load(f)
+with open('ATE_test.json', 'r') as f:
+    ate_test_data = json.load(f)
+
+# Function to tokenize and pad sequences
+def tokenize_pad(data, max_length):
+    texts = [data[key]['text'] for key in data]
+    labels = [data[key]['labels'] for key in data]
+    
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(texts)
+    sequences = tokenizer.texts_to_sequences(texts)
+    
+    X_pad = pad_sequences(sequences, maxlen=max_length, padding='post', truncating='post')
+    return X_pad, labels
+
+# Function to get vocabulary size
+def get_vocab_size(data):
+    texts = [data[key]['text'] for key in data]
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(texts)
+    return len(tokenizer.word_index) + 1
+
+# Define models
+def create_rnn_model(embedding_dim, rnn_units, label_to_index):
+    model = Sequential([
+        Embedding(input_dim=embedding_dim, output_dim=rnn_units, input_length=max_length),
+        SimpleRNN(rnn_units, return_sequences=True),
+        Dense(50, activation='relu'),
+        Dense(len(label_to_index), activation='softmax')  # Output layer changed to softmax
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+def create_lstm_model(embedding_dim, lstm_units, label_to_index):
+    model = Sequential([
+        Embedding(input_dim=embedding_dim, output_dim=lstm_units, input_length=max_length),
+        LSTM(lstm_units, return_sequences=True),
+        Dense(50, activation='relu'),
+        Dense(len(label_to_index), activation='softmax')  # Output layer changed to softmax
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+def create_gru_model(embedding_dim, gru_units, label_to_index):
+    model = Sequential([
+        Embedding(input_dim=embedding_dim, output_dim=gru_units, input_length=max_length),
+        GRU(gru_units, return_sequences=True),
+        Dense(50, activation='relu'),
+        Dense(len(label_to_index), activation='softmax')  # Output layer changed to softmax
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
 
 
-# Load pre-trained RoBERTa tokenizer and model
-tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-roberta_model = RobertaModel.from_pretrained('roberta-base')
+# Train models
+batch_size = 32
+epochs = 10
+max_length = 100  # Adjust according to your data
 
-# Load NER datasets
-ner_train_data = load_dataset('NER_train.json')
-ner_val_data = load_dataset('NER_val.json')
-ner_test_data = load_dataset('NER_test.json')
+# Tokenize and pad sequences for NER dataset
+X_train_ner, y_train_ner = tokenize_pad(ner_train_data, max_length)
+print(np.array(y_train_ner).shape)
+X_val_ner, y_val_ner = tokenize_pad(ner_val_data, max_length)
+X_test_ner, y_test_ner = tokenize_pad(ner_test_data, max_length)
 
-# Load ATE datasets
-ate_train_data = load_dataset('ATE_train.json')
-ate_val_data = load_dataset('ATE_val.json')
-ate_test_data = load_dataset('ATE_test.json')
+# Convert labels to numerical indices using LabelEncoder for NER dataset
+label_encoder_ner = LabelEncoder()
+label_encoder_ner.fit([label for seq in y_train_ner + y_val_ner + y_test_ner for label in seq])
+y_train_ner = np.array([label_encoder_ner.transform(seq) for seq in y_train_ner])
+y_val_ner = np.array([label_encoder_ner.transform(seq) for seq in y_val_ner])
+y_test_ner = np.array([label_encoder_ner.transform(seq) for seq in y_test_ner])
 
-# Define RNN-based model
-class RNNModel(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(RNNModel, self).__init__()
-        self.embedding = nn.Embedding.from_pretrained(roberta_model.embeddings.word_embeddings.weight)
-        self.rnn = nn.RNN(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-        
-    def forward(self, x):
-        embedded = self.embedding(x)
-        output, _ = self.rnn(embedded)
-        output = self.fc(output)
-        return output
+# Pad sequences of labels for NER dataset
+max_label_length_ner = max(len(seq) for seq in y_train_ner + y_val_ner + y_test_ner)
+y_train_ner = pad_sequences(y_train_ner, padding='post', maxlen=max_label_length_ner)
+y_val_ner = pad_sequences(y_val_ner, padding='post', maxlen=max_label_length_ner)
+y_test_ner = pad_sequences(y_test_ner, padding='post', maxlen=max_label_length_ner)
 
-# Define LSTM-based model
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(LSTMModel, self).__init__()
-        self.embedding = nn.Embedding.from_pretrained(roberta_model.embeddings.word_embeddings.weight)
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-        
-    def forward(self, x):
-        embedded = self.embedding(x)
-        output, _ = self.lstm(embedded)
-        output = self.fc(output)
-        return output
+# Tokenize and pad sequences for ATE dataset
+X_train_ate, y_train_ate = tokenize_pad(ate_train_data, max_length)
+X_val_ate, y_val_ate = tokenize_pad(ate_val_data, max_length)
+X_test_ate, y_test_ate = tokenize_pad(ate_test_data, max_length)
 
-# Define GRU-based model
-class GRUModel(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(GRUModel, self).__init__()
-        self.embedding = nn.Embedding.from_pretrained(roberta_model.embeddings.word_embeddings.weight)
-        self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-        
-    def forward(self, x):
-        embedded = self.embedding(x)
-        output, _ = self.gru(embedded)
-        output = self.fc(output)
-        return output
 
-# Define hyperparameters and training parameters
-input_size = roberta_model.config.hidden_size
-hidden_size = 128
-output_size = 2  # Assuming binary classification (B, I) for BIO tagging
-learning_rate = 0.00005
-max_training_steps = 40000
-training_batch_size = 256
-num_epochs = 10
+# Convert labels to numerical indices using LabelEncoder for ATE dataset
+label_encoder_ate = LabelEncoder()
+label_encoder_ate.fit([label for seq in y_train_ate + y_val_ate + y_test_ate for label in seq])
+y_train_ate = np.array([label_encoder_ate.transform(seq) for seq in y_train_ate])
+y_val_ate = np.array([label_encoder_ate.transform(seq) for seq in y_val_ate])
+y_test_ate = np.array([label_encoder_ate.transform(seq) for seq in y_test_ate])
 
-# Define DataLoader for training data
-def collate_fn(batch):
-    inputs = [item['input_ids'] for item in batch]
-    labels = [item['labels'] for item in batch]
-    return torch.tensor(inputs), torch.tensor(labels)
+# Pad sequences of labels for ATE dataset
+max_label_length_ate = max(len(seq) for seq in y_train_ate + y_val_ate + y_test_ate)
+y_train_ate = pad_sequences(y_train_ate, padding='post', maxlen=max_label_length_ate)
+y_val_ate = pad_sequences(y_val_ate, padding='post', maxlen=max_label_length_ate)
+y_test_ate = pad_sequences(y_test_ate, padding='post', maxlen=max_label_length_ate)
 
-# Define function to train and evaluate models
-def train_and_evaluate_model(model, optimizer, train_loader, val_loader, criterion):
-    train_loss = []
-    val_loss = []
-    train_f1 = []
-    val_f1 = []
+# Define models
+models = {'RNN': create_rnn_model, 'LSTM': create_lstm_model, 'GRU': create_gru_model}
 
-    for epoch in range(num_epochs):
-        model.train()
-        running_loss = 0.0
-        for step, batch in enumerate(train_loader):
-            inputs, labels = batch
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-        train_loss.append(running_loss / len(train_loader))
+# Training and plotting for each model setup for NER dataset
+for model_type, create_model_func in models.items():
+    model = create_model_func(get_vocab_size(ner_train_data), 100, label_to_index_ner)  # Assuming embedding dimension is 100
+    history = model.fit(X_train_ner, np.array(y_train_ner), batch_size=batch_size, epochs=epochs, validation_data=(X_val_ner, np.array(y_val_ner)), verbose=0)
+    
+    # Plotting
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title(f'{model_type} Model (NER) - Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
 
-        model.eval()
-        with torch.no_grad():
-            val_preds = []
-            val_targets = []
-            val_loss_value = 0.0
-            for batch in val_loader:
-                inputs, labels = batch
-                outputs = model(inputs)
-                loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-                val_loss_value += loss.item()
-                preds = torch.argmax(outputs, dim=-1)
-                val_preds.extend(preds.tolist())
-                val_targets.extend(labels.tolist())
-            val_loss.append(val_loss_value / len(val_loader))
-            val_f1.append(f1_score(val_targets, val_preds, average='macro'))
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title(f'{model_type} Model (NER) - Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.show()
+    
+    # Evaluate on test set
+    test_loss, test_acc = model.evaluate(X_test_ner, np.array(y_test_ner), verbose=0)
+    y_pred = model.predict_classes(X_test_ner)
+    test_f1 = f1_score(np.array(y_test_ner).flatten(), y_pred.flatten(), average='macro')
+    print(f'{model_type} Model (NER) - Test Accuracy: {test_acc}, Test Macro-F1: {test_f1}')
 
-    return train_loss, val_loss, val_f1
+# Training and plotting for each model setup for ATE dataset
+for model_type, create_model_func in models.items():
+    model = create_model_func(get_vocab_size(ate_train_data), 100, label_to_index_ate)  # Assuming embedding dimension is 100
+    history = model.fit(X_train_ate, np.array(y_train_ate), batch_size=batch_size, epochs=epochs, validation_data=(X_val_ate, np.array(y_val_ate)), verbose=0)
+    
+    # Plotting
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title(f'{model_type} Model (ATE) - Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
 
-# Train and evaluate models for NER
-ner_train_loader = DataLoader(ner_train_data, batch_size=training_batch_size, shuffle=True, collate_fn=collate_fn)
-ner_val_loader = DataLoader(ner_val_data, batch_size=training_batch_size, shuffle=False, collate_fn=collate_fn)
-
-ner_model_rnn = RNNModel(input_size, hidden_size, output_size)
-ner_model_lstm = LSTMModel(input_size, hidden_size, output_size)
-ner_model_gru = GRUModel(input_size, hidden_size, output_size)
-
-optimizer_ner_rnn = optim.Adam(ner_model_rnn.parameters(), lr=learning_rate)
-optimizer_ner_lstm = optim.Adam(ner_model_lstm.parameters(), lr=learning_rate)
-optimizer_ner_gru = optim.Adam(ner_model_gru.parameters(), lr=learning_rate)
-
-ner_criterion = nn.CrossEntropyLoss()
-
-ner_rnn_train_loss, ner_rnn_val_loss, ner_rnn_val_f1 = train_and_evaluate_model(ner_model_rnn, optimizer_ner_rnn, ner_train_loader, ner_val_loader, ner_criterion)
-ner_lstm_train_loss, ner_lstm_val_loss, ner_lstm_val_f1 = train_and_evaluate_model(ner_model_lstm, optimizer_ner_lstm, ner_train_loader, ner_val_loader, ner_criterion)
-ner_gru_train_loss, ner_gru_val_loss, ner_gru_val_f1 = train_and_evaluate_model(ner_model_gru, optimizer_ner_gru, ner_train_loader, ner_val_loader, ner_criterion)
-
-# Plot NER results
-plt.figure(figsize=(12, 6))
-
-plt.subplot(1, 2, 1)
-plt.plot(ner_rnn_train_loss, label='RNN Training Loss')
-plt.plot(ner_rnn_val_loss, label='RNN Validation Loss')
-plt.plot(ner_lstm_train_loss, label='LSTM Training Loss')
-plt.plot(ner_lstm_val_loss, label='LSTM Validation Loss')
-plt.plot(ner_gru_train_loss, label='GRU Training Loss')
-plt.plot(ner_gru_val_loss, label='GRU Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.title('NER Model Training and Validation Loss')
-plt.legend()
-
-plt.subplot(1, 2, 2)
-plt.plot(ner_rnn_val_f1, label='RNN Validation F1')
-plt.plot(ner_lstm_val_f1, label='LSTM Validation F1')
-plt.plot(ner_gru_val_f1, label='GRU Validation F1')
-plt.xlabel('Epochs')
-plt.ylabel('F1 Score')
-plt.title('NER Model Validation F1 Score')
-plt.legend()
-
-plt.show()
-
-# Train and evaluate models for ATE
-ate_train_loader = DataLoader(ate_train_data, batch_size=training_batch_size, shuffle=True, collate_fn=collate_fn)
-ate_val_loader = DataLoader(ate_val_data, batch_size=training_batch_size, shuffle=False, collate_fn=collate_fn)
-
-ate_model_rnn = RNNModel(input_size, hidden_size, output_size)
-ate_model_lstm = LSTMModel(input_size, hidden_size, output_size)
-ate_model_gru = GRUModel(input_size, hidden_size, output_size)
-
-optimizer_ate_rnn = optim.Adam(ate_model_rnn.parameters(), lr=learning_rate)
-optimizer_ate_lstm = optim.Adam(ate_model_lstm.parameters(), lr=learning_rate)
-optimizer_ate_gru = optim.Adam(ate_model_gru.parameters(), lr=learning_rate)
-
-ate_criterion = nn.CrossEntropyLoss()
-
-ate_rnn_train_loss, ate_rnn_val_loss, ate_rnn_val_f1 = train_and_evaluate_model(ate_model_rnn, optimizer_ate_rnn, ate_train_loader, ate_val_loader, ate_criterion)
-ate_lstm_train_loss, ate_lstm_val_loss, ate_lstm_val_f1 = train_and_evaluate_model(ate_model_lstm, optimizer_ate_lstm, ate_train_loader, ate_val_loader, ate_criterion)
-ate_gru_train_loss, ate_gru_val_loss, ate_gru_val_f1 = train_and_evaluate_model(ate_model_gru, optimizer_ate_gru, ate_train_loader, ate_val_loader, ate_criterion)
-
-# Plot ATE results
-plt.figure(figsize=(12, 6))
-
-plt.subplot(1, 2, 1)
-plt.plot(ate_rnn_train_loss, label='RNN Training Loss')
-plt.plot(ate_rnn_val_loss, label='RNN Validation Loss')
-plt.plot(ate_lstm_train_loss, label='LSTM Training Loss')
-plt.plot(ate_lstm_val_loss, label='LSTM Validation Loss')
-plt.plot(ate_gru_train_loss, label='GRU Training Loss')
-plt.plot(ate_gru_val_loss, label='GRU Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.title('ATE Model Training and Validation Loss')
-plt.legend()
-
-plt.subplot(1, 2, 2)
-plt.plot(ate_rnn_val_f1, label='RNN Validation F1')
-plt.plot(ate_lstm_val_f1, label='LSTM Validation F1')
-plt.plot(ate_gru_val_f1, label='GRU Validation F1')
-plt.xlabel('Epochs')
-plt.ylabel('F1 Score')
-plt.title('ATE Model Validation F1 Score')
-plt.legend()
-
-plt.show()
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title(f'{model_type} Model (ATE) - Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.show()
+    
+    # Evaluate on test set
+    test_loss, test_acc = model.evaluate(X_test_ate, np.array(y_test_ate), verbose=0)
+    y_pred = model.predict_classes(X_test_ate)
+    test_f1 = f1_score(np.array(y_test_ate).flatten(), y_pred.flatten(), average='macro')
+    print(f'{model_type} Model (ATE) - Test Accuracy: {test_acc}, Test Macro-F1: {test_f1}')
