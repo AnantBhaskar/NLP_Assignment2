@@ -32,13 +32,16 @@ def bio_chunking(text, annotations):
             start = result['value']['start']
             end = result['value']['end']
             label = result['value']['labels'][0]
-            for i in range(start, end):
-                if i < len(tokens):
-                    if i == start:
+            for i in range(len(tokens)):
+                token_start = sum(len(tokens[j]) + 1 for j in range(i))
+                token_end = token_start + len(tokens[i])
+                if token_start >= start and token_end <= end:
+                    if token_start == start:
                         labels[i] = 'B_' + label
-                    elif i > start:
-                        if i < end:
-                            labels[i] = 'I_' + label
+                    else:
+                        labels[i] = 'I_' + label
+                elif token_start > end:
+                    break
     return tokens, labels
 
 # Processing and saving the train data
@@ -64,10 +67,11 @@ for entry in val_data:
 
 with open('NER_val.json', 'w') as f:
     json.dump(val_processed, f, indent=4)
-
+    
 # Loading test data
 with open('NER/NER_TEST_JUDGEMENT.json', 'r') as f:
     test_data = json.load(f)
+
 
 # Processing and saving the test data
 test_processed = {}
@@ -80,3 +84,4 @@ for entry in test_data:
 
 with open('NER_test.json', 'w') as f:
     json.dump(test_processed, f, indent=4)
+    
