@@ -1,3 +1,4 @@
+
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score
@@ -10,38 +11,28 @@ from tensorflow.keras.preprocessing.text import Tokenizer
 import json
 
 # Load datasets
-with open('NER_train.json', 'r') as f:
-    ner_train_data = json.load(f)
-with open('NER_val.json', 'r') as f:
-    ner_val_data = json.load(f)
-with open('NER_test.json', 'r') as f:
-    ner_test_data = json.load(f)
-
-with open('ATE_train.json', 'r') as f:
-    ate_train_data = json.load(f)
-with open('ATE_val.json', 'r') as f:
-    ate_val_data = json.load(f)
-with open('ATE_test.json', 'r') as f:
-    ate_test_data = json.load(f)
+def load_data(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    return data
 
 # Function to tokenize and pad sequences
 def tokenize_pad(data, max_length):
     texts = [data[key]['text'] for key in data]
     labels = [data[key]['labels'] for key in data]
-    
+
     tokenizer = Tokenizer()
     tokenizer.fit_on_texts(texts)
     sequences = tokenizer.texts_to_sequences(texts)
-    
+
     X_pad = pad_sequences(sequences, maxlen=max_length, padding='post', truncating='post')
     return X_pad, labels, tokenizer.word_index
 
 # Define models
 def create_rnn_model(vocab_size, max_length, label_size):
     model = Sequential([
-        Embedding(input_dim=vocab_size, output_dim=100, input_length=max_length),
-        SimpleRNN(100, return_sequences=True),
-        Dense(50, activation='relu'),
+        Embedding(input_dim=vocab_size, output_dim=50, input_length=max_length),
+        SimpleRNN(50, return_sequences=True),
         Dense(label_size, activation='softmax')
     ])
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
@@ -49,9 +40,8 @@ def create_rnn_model(vocab_size, max_length, label_size):
 
 def create_lstm_model(vocab_size, max_length, label_size):
     model = Sequential([
-        Embedding(input_dim=vocab_size, output_dim=100, input_length=max_length),
-        LSTM(100, return_sequences=True),
-        Dense(50, activation='relu'),
+        Embedding(input_dim=vocab_size, output_dim=50, input_length=max_length),
+        LSTM(50, return_sequences=True),
         Dense(label_size, activation='softmax')
     ])
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
@@ -59,13 +49,29 @@ def create_lstm_model(vocab_size, max_length, label_size):
 
 def create_gru_model(vocab_size, max_length, label_size):
     model = Sequential([
-        Embedding(input_dim=vocab_size, output_dim=100, input_length=max_length),
-        GRU(100, return_sequences=True),
-        Dense(50, activation='relu'),
+        Embedding(input_dim=vocab_size, output_dim=50, input_length=max_length),
+        GRU(50, return_sequences=True),
         Dense(label_size, activation='softmax')
     ])
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model
+
+# Define a function to create a generator for data loading
+def data_generator(data, batch_size, max_length, label_encoder):
+    texts = [data[key]['text'] for key in data]
+    labels = [data[key]['labels'] for key in data]
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(texts)
+    while True:
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            batch_labels = labels[i:i+batch_size]
+            sequences = tokenizer.texts_to_sequences(batch_texts)
+            X_batch = pad_sequences(sequences, maxlen=max_length, padding='post', truncating='post')
+            # Pad labels to match the length of the input sequences
+            padded_labels = [pad_sequences([label_encoder.transform(seq)], padding='post', maxlen=max_length)[0] for seq in batch_labels]
+            y_batch = np.array(padded_labels)
+            yield X_batch, y_batch
 
 def get_vocab_size(data):
     texts = [data[key]['text'] for key in data]
@@ -74,75 +80,48 @@ def get_vocab_size(data):
     return len(tokenizer.word_index) + 1
 
 # Train models
-batch_size = 32
-epochs = 10
-max_length = 70  # Adjust according to your data
+def train_model(model, train_generator, val_generator, epochs):
+    history = model.fit(train_generator,
+                        steps_per_epoch=len(X_train) // batch_size,
+                        epochs=epochs,
+                        validation_data=val_generator,
+                        validation_steps=len(X_val) // batch_size,
+                        callbacks=[F1ScoreCallback()])
+    return history
 
-# Tokenize and pad sequences for NER dataset
-X_train_ner, y_train_ner, label_to_index_ner = tokenize_pad(ner_train_data, max_length)
-X_val_ner, y_val_ner, _ = tokenize_pad(ner_val_data, max_length)
-X_test_ner, y_test_ner, _ = tokenize_pad(ner_test_data, max_length)
+# Callback to calculate F1 score
+class F1ScoreCallback(tf.keras.callbacks.Callback):
+    def __init__(self):
+        super(F1ScoreCallback, self).__init__()
+        self.f1_scores = []
+        self.val_f1_scores = []
 
-# Convert labels to numerical indices using LabelEncoder for NER dataset
-label_encoder_ner = LabelEncoder()
-label_encoder_ner.fit([label for seq in y_train_ner + y_val_ner + y_test_ner for label in seq])
+    def on_epoch_end(self, epoch, logs=None):
+        y_pred = np.argmax(self.model.predict(X_train), axis=-1)
+        y_true = np.argmax(y_train, axis=-1)
+        f1 = f1_score(y_true.reshape(-1), y_pred.reshape(-1), average='macro')
+        self.f1_scores.append(f1)
 
-# Calculate max_label_length_ner
-max_label_length_ner = max(len(seq) for seq in y_train_ner + y_val_ner + y_test_ner)
+        y_pred_val = np.argmax(self.model.predict(X_val), axis=-1)
+        y_true_val = np.argmax(y_val, axis=-1)
+        val_f1 = f1_score(y_true_val.reshape(-1), y_pred_val.reshape(-1), average='macro')
+        self.val_f1_scores.append(val_f1)
 
-# Pad sequences to the maximum length
-y_train_ner = [pad_sequences([label_encoder_ner.transform(seq)], padding='post', maxlen=max_label_length_ner)[0] for seq in y_train_ner]
-y_val_ner = [pad_sequences([label_encoder_ner.transform(seq)], padding='post', maxlen=max_label_length_ner)[0] for seq in y_val_ner]
-y_test_ner = [pad_sequences([label_encoder_ner.transform(seq)], padding='post', maxlen=max_label_length_ner)[0] for seq in y_test_ner]
-
-# Convert to NumPy array
-y_train_ner = np.array(y_train_ner)
-y_val_ner = np.array(y_val_ner)
-y_test_ner = np.array(y_test_ner)
-
-# Tokenize and pad sequences for ATE dataset
-X_train_ate, y_train_ate, label_to_index_ate = tokenize_pad(ate_train_data, max_length)
-X_val_ate, y_val_ate, _ = tokenize_pad(ate_val_data, max_length)
-X_test_ate, y_test_ate, _ = tokenize_pad(ate_test_data, max_length)
-
-# Convert labels to numerical indices using LabelEncoder for ATE dataset
-label_encoder_ate = LabelEncoder()
-label_encoder_ate.fit([label for seq in y_train_ate + y_val_ate + y_test_ate for label in seq])
-
-# Calculate max_label_length_ate
-max_label_length_ate = max(len(seq) for seq in y_train_ate + y_val_ate + y_test_ate)
-
-# Pad sequences to the maximum length for ATE dataset
-y_train_ate = [pad_sequences([label_encoder_ate.transform(seq)], padding='post', maxlen=max_label_length_ate)[0] for seq in y_train_ate]
-y_val_ate = [pad_sequences([label_encoder_ate.transform(seq)], padding='post', maxlen=max_label_length_ate)[0] for seq in y_val_ate]
-y_test_ate = [pad_sequences([label_encoder_ate.transform(seq)], padding='post', maxlen=max_label_length_ate)[0] for seq in y_test_ate]
-
-# Convert to NumPy array for ATE dataset
-y_train_ate = np.array(y_train_ate)
-y_val_ate = np.array(y_val_ate)
-y_test_ate = np.array(y_test_ate)
-
-# Define models
-models = {'RNN': create_rnn_model, 'LSTM': create_lstm_model, 'GRU': create_gru_model}
-
-# Define a function to plot Loss and F1 scores
-def plot_metrics(history, model_type):
+# Plot Loss and F1 score
+def plot_metrics(history, task, model_type):
     plt.figure(figsize=(12, 6))
-
-    # Plot Loss
     plt.subplot(1, 2, 1)
     plt.plot(history.history['loss'], label='Training Loss')
     plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title(f'{model_type} Model - Loss')
+    plt.title(f'Model Loss {task} Dataset for {model_type}')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
 
-    # Plot F1 score
     plt.subplot(1, 2, 2)
-    plt.plot(history.history['f1_score'], label='Training Macro-F1-score')
-    plt.plot(history.history['val_f1_score'], label='Validation Macro-F1-score')
-    plt.title(f'{model_type} Model - F1 Score')
+    plt.plot(history.f1_scores, label='Training F1 Score')
+    plt.plot(history.val_f1_scores, label='Validation F1 Score')
+    plt.title(f'Model F1 Score {task} Dataset for {model_type}')
     plt.xlabel('Epochs')
     plt.ylabel('F1 Score')
     plt.legend()
@@ -150,20 +129,78 @@ def plot_metrics(history, model_type):
     plt.tight_layout()
     plt.show()
 
-# Training and plotting for each model setup for NER dataset
-for model_type, create_model_func in models.items():
-    model = create_model_func(get_vocab_size(ner_train_data), max_length, len(label_to_index_ner))
-    history = model.fit(X_train_ner, y_train_ner, batch_size=batch_size, epochs=epochs, validation_data=(X_val_ner, y_val_ner), verbose=0)
-    
-    # Calculate F1 scores
-    y_pred_train = model.predict(X_train_ner)
-    y_pred_val = model.predict(X_val_ner)
-    f1_train = f1_score(np.argmax(y_train_ner, axis=1), np.argmax(y_pred_train, axis=1), average='macro')
-    f1_val = f1_score(np.argmax(y_val_ner, axis=1), np.argmax(y_pred_val, axis=1), average='macro')
+# Load datasets
+ner_train_data = load_data('NER_train.json')
+ner_val_data = load_data('NER_val.json')
+ner_test_data = load_data('NER_test.json')
 
-    # Store F1 scores in history object
-    history.history['f1_score'] = [f1_train] * epochs
-    history.history['val_f1_score'] = [f1_val] * epochs
-    
-    # Plotting metrics
-    plot_metrics(history, model_type)
+ate_train_data = load_data('ATE_train.json')
+ate_val_data = load_data('ATE_val.json')
+ate_test_data = load_data('ATE_test.json')
+
+# Train models
+batch_size = 32
+epochs = 10
+max_length = 70
+
+# Tokenize and pad sequences for NER dataset
+X_train, y_train, label_to_index = tokenize_pad(ner_train_data, max_length)
+X_val, y_val, _ = tokenize_pad(ner_val_data, max_length)
+
+# Convert labels to numerical indices using LabelEncoder for NER dataset
+label_encoder = LabelEncoder()
+labels = [label for seq in y_train + y_val for label in seq]
+label_encoder.fit(labels)
+
+
+# Train RNN model for NER dataset
+model_rnn_ner = create_rnn_model(get_vocab_size(ner_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ner_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ner_val_data, batch_size, max_length, label_encoder)
+history_rnn_ner = train_model(model_rnn_ner, train_generator, val_generator, epochs)
+plot_metrics(history_rnn_ner, 'NER', 'RNN')
+
+# Train LSTM model for NER dataset
+model_lstm_ner = create_lstm_model(get_vocab_size(ner_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ner_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ner_val_data, batch_size, max_length, label_encoder)
+history_lstm_ner = train_model(model_lstm_ner, train_generator, val_generator, epochs)
+plot_metrics(history_lstm_ner, 'NER', 'LSTM')
+
+# Train GRU model for NER dataset
+model_gru_ner = create_gru_model(get_vocab_size(ner_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ner_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ner_val_data, batch_size, max_length, label_encoder)
+history_gru_ner = train_model(model_gru_ner, train_generator, val_generator, epochs)
+plot_metrics(history_gru_ner, 'NER', 'GRU')
+
+# Tokenize and pad sequences for ATE dataset
+X_train, y_train, label_to_index = tokenize_pad(ate_train_data, max_length)
+X_val, y_val, _ = tokenize_pad(ate_val_data, max_length)
+
+# Convert labels to numerical indices using LabelEncoder for ATE dataset
+label_encoder = LabelEncoder()
+labels = [label for seq in y_train + y_val for label in seq]
+label_encoder.fit(labels)
+
+
+# Train RNN model for ATE dataset
+model_rnn_ate = create_rnn_model(get_vocab_size(ate_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ate_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ate_val_data, batch_size, max_length, label_encoder)
+history_rnn_ate = train_model(model_rnn_ate, train_generator, val_generator, epochs)
+plot_metrics(history_rnn_ate, 'ATE', 'RNN')
+
+# Train LSTM model for ATE dataset
+model_lstm_ate = create_lstm_model(get_vocab_size(ate_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ate_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ate_val_data, batch_size, max_length, label_encoder)
+history_lstm_ate = train_model(model_lstm_ate, train_generator, val_generator, epochs)
+plot_metrics(history_lstm_ate, 'ATE', 'LSTM')
+
+# Train GRU model for ATE dataset
+model_gru_ate = create_gru_model(get_vocab_size(ate_train_data), max_length, len(label_to_index))
+train_generator = data_generator(ate_train_data, batch_size, max_length, label_encoder)
+val_generator = data_generator(ate_val_data, batch_size, max_length, label_encoder)
+history_gru_ate = train_model(model_gru_ate, train_generator, val_generator, epochs)
+plot_metrics(history_gru_ate, 'ATE', 'GRU')
