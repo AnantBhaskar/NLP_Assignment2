@@ -1,4 +1,3 @@
-
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score
@@ -7,14 +6,25 @@ from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Embedding, SimpleRNN, LSTM, GRU, Dense
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from sklearn.metrics import f1_score
 from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.callbacks import Callback
 import json
 
 # Load datasets
-def load_data(file_path):
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return data
+with open('NER_train.json', 'r') as f:
+    ner_train_data = json.load(f)
+with open('NER_val.json', 'r') as f:
+    ner_val_data = json.load(f)
+with open('NER_test.json', 'r') as f:
+    ner_test_data = json.load(f)
+
+with open('ATE_train.json', 'r') as f:
+    ate_train_data = json.load(f)
+with open('ATE_val.json', 'r') as f:
+    ate_val_data = json.load(f)
+with open('ATE_test.json', 'r') as f:
+    ate_test_data = json.load(f)
 
 # Function to tokenize and pad sequences
 def tokenize_pad(data, max_length):
@@ -56,6 +66,41 @@ def create_gru_model(vocab_size, max_length, label_size):
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model
 
+# Custom callback to calculate F1 score on training and validation data per epoch
+class F1ScoreCallback(Callback):
+    def __init__(self, X_train, y_train, X_val, y_val):
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
+        self.label_to_index = {}
+
+        # Create label-to-index mapping
+        self.create_label_to_index()
+
+    def create_label_to_index(self):
+        # Gather unique labels from training and validation data
+        all_labels = {'B', 'I', 'O'}
+
+        # Assign index to each label
+        self.label_to_index = {label: index for index, label in enumerate(all_labels)}
+
+    def on_epoch_end(self, epoch, logs=None):
+        train_predict = np.argmax(self.model.predict(self.X_train), axis=2)
+        val_predict = np.argmax(self.model.predict(self.X_val), axis=2)
+
+        # Convert y_train and y_val to padded numpy arrays
+        train_targ = pad_sequences([[self.label_to_index[label] for label in seq] for seq in self.y_train], maxlen=max_length, padding='post', truncating='post')
+        val_targ = pad_sequences([[self.label_to_index[label] for label in seq] for seq in self.y_val], maxlen=max_length, padding='post', truncating='post')
+
+        train_f1 = f1_score(train_targ.flatten(), train_predict.flatten(), average='macro')
+        val_f1 = f1_score(val_targ.flatten(), val_predict.flatten(), average='macro')
+
+        logs['train_f1_score'] = train_f1
+        logs['val_f1_score'] = val_f1
+
+        print(f"Epoch {epoch + 1} - Train F1 Score: {train_f1:.4f}, Validation F1 Score: {val_f1:.4f}")
+
 # Define a function to create a generator for data loading
 def data_generator(data, batch_size, max_length, label_encoder):
     texts = [data[key]['text'] for key in data]
@@ -81,31 +126,16 @@ def get_vocab_size(data):
 
 # Train models
 def train_model(model, train_generator, val_generator, epochs):
+
+    f1_callback = F1ScoreCallback(X_train, y_train, X_val, y_val)
+
     history = model.fit(train_generator,
                         steps_per_epoch=len(X_train) // batch_size,
                         epochs=epochs,
                         validation_data=val_generator,
                         validation_steps=len(X_val) // batch_size,
-                        callbacks=[F1ScoreCallback()])
+                        callbacks=[f1_callback])
     return history
-
-# Callback to calculate F1 score
-class F1ScoreCallback(tf.keras.callbacks.Callback):
-    def __init__(self):
-        super(F1ScoreCallback, self).__init__()
-        self.f1_scores = []
-        self.val_f1_scores = []
-
-    def on_epoch_end(self, epoch, logs=None):
-        y_pred = np.argmax(self.model.predict(X_train), axis=-1)
-        y_true = np.argmax(y_train, axis=-1)
-        f1 = f1_score(y_true.reshape(-1), y_pred.reshape(-1), average='macro')
-        self.f1_scores.append(f1)
-
-        y_pred_val = np.argmax(self.model.predict(X_val), axis=-1)
-        y_true_val = np.argmax(y_val, axis=-1)
-        val_f1 = f1_score(y_true_val.reshape(-1), y_pred_val.reshape(-1), average='macro')
-        self.val_f1_scores.append(val_f1)
 
 # Plot Loss and F1 score
 def plot_metrics(history, task, model_type):
@@ -119,8 +149,8 @@ def plot_metrics(history, task, model_type):
     plt.legend()
 
     plt.subplot(1, 2, 2)
-    plt.plot(history.f1_scores, label='Training F1 Score')
-    plt.plot(history.val_f1_scores, label='Validation F1 Score')
+    plt.plot(history.history['train_f1_score'], label='Training F1 Score')
+    plt.plot(history.history['val_f1_score'], label='Validation F1 Score')
     plt.title(f'Model F1 Score {task} Dataset for {model_type}')
     plt.xlabel('Epochs')
     plt.ylabel('F1 Score')
@@ -128,15 +158,6 @@ def plot_metrics(history, task, model_type):
 
     plt.tight_layout()
     plt.show()
-
-# Load datasets
-ner_train_data = load_data('NER_train.json')
-ner_val_data = load_data('NER_val.json')
-ner_test_data = load_data('NER_test.json')
-
-ate_train_data = load_data('ATE_train.json')
-ate_val_data = load_data('ATE_val.json')
-ate_test_data = load_data('ATE_test.json')
 
 # Train models
 batch_size = 32
@@ -151,7 +172,6 @@ X_val, y_val, _ = tokenize_pad(ner_val_data, max_length)
 label_encoder = LabelEncoder()
 labels = [label for seq in y_train + y_val for label in seq]
 label_encoder.fit(labels)
-
 
 # Train RNN model for NER dataset
 model_rnn_ner = create_rnn_model(get_vocab_size(ner_train_data), max_length, len(label_to_index))
@@ -183,12 +203,22 @@ label_encoder = LabelEncoder()
 labels = [label for seq in y_train + y_val for label in seq]
 label_encoder.fit(labels)
 
+print(X_train)
+
+print(y_train)
+
+print(X_val)
+
+print(y_val)
 
 # Train RNN model for ATE dataset
 model_rnn_ate = create_rnn_model(get_vocab_size(ate_train_data), max_length, len(label_to_index))
 train_generator = data_generator(ate_train_data, batch_size, max_length, label_encoder)
 val_generator = data_generator(ate_val_data, batch_size, max_length, label_encoder)
-history_rnn_ate = train_model(model_rnn_ate, train_generator, val_generator, epochs)
+
+f1_callback = F1ScoreCallback(X_train, y_train, X_val, y_val)
+
+history_rnn_ate = model_rnn_ate.fit(train_generator,steps_per_epoch=len(X_train) // batch_size,epochs=epochs,validation_data=val_generator,validation_steps=len(X_val) // batch_size,callbacks=[f1_callback])
 plot_metrics(history_rnn_ate, 'ATE', 'RNN')
 
 # Train LSTM model for ATE dataset
